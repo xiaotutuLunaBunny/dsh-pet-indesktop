@@ -33,6 +33,7 @@
 | [`../AGENTS.md`](../AGENTS.md) | 工程指南：项目结构、变更纪律、CI 成本纪律、"Context pointers" 触发表、agent skills 入口。 | 提交任何代码之前；尤其改动碰撞选举、ffmpeg 派生、打包、菜单、设置、PR 合并前，先查 "Context pointers"。 |
 | [`../CONTEXT.md`](../CONTEXT.md) | 领域术语表（Shared UX Contract / Settings System / Menu Action Model / Report Gate / Session-End Spawn Freeze 等）与禁用说法。 | 命名新概念、写设计文档、或需要确认"这个词在本项目里到底指什么"时；提案与既有术语冲突时必须先读。 |
 | [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) | 第三方素材、组件**与随包分发的第三方二进制**（如 `resources/presentmon/` 的帧率采集后端及其 MIT 原文）的授权声明；本文件本身随桌面三端产物（`_internal/`）与 APK 资产分发。 | 新增/替换动画素材、图标、字体、第三方库，或**把任何第三方二进制（含内置音效）随包分发**时（后者另有构建期的 sha256/架构门与 `--add-data` 接线守卫，见 [`ONEDIR_PACKAGING.md`](ONEDIR_PACKAGING.md) 第一、四节与 [`ANDROID.md`](ANDROID.md)）；素材制作与入库流程见 [`ASSET-PIPELINE.md`](ASSET-PIPELINE.md)，新素材的来源署名必须同步回本文。 |
+| [`UBUNTU-I3-ENV-SETUP-TROUBLESHOOTING.md`](UBUNTU-I3-ENV-SETUP-TROUBLESHOOTING.md) | **运行环境配置与启动排障手册**：Ubuntu 24.04.4（X11/PySide6 6.11.3）已跑通的环境快照 + 迁移到 **Ubuntu 26 + i3** 的环境检查清单（Qt6 xcb 系统库、picom 合成器、trayer 托盘宿主、DBus session、fcitx、noto-cjk 字体、pyenv/venv、代理/SSL）+ i3 配置片段 + 排障速查表 + 诊断命令。 | 在 Linux（尤其 **i3 / 无合成器 / 无系统托盘** 的环境）把项目跑起来之前或启动失败排查时必读；xcb 插件加载失败、透明窗发黑、托盘消失只剩「桌宠恢复」窗、DBus 缺失这四类问题先查本文。 |
 
 ---
 

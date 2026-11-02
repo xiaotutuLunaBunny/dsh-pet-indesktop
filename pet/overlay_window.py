@@ -46,6 +46,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from . import catalog
 from . import overlay_peripherals
+from .platform_linux import _x11_bypass_wm_flag
 from .platform_mac import (
     _keep_macos_tool_window_visible,
     _mac_no_window_shadow_flag,
@@ -85,6 +86,12 @@ class OverlayWindow(QWidget):
                             # accessory app on macOS while another app is in
                             # the middle of IME composition.
                             | Qt.WindowType.WindowDoesNotAcceptFocus
+                            # X11：override-redirect，绝不让 WM 接管本窗。i3 等
+                            # 平铺 WM 不认 Qt 的 KDE override 提示，会把这张
+                            # 并集尺寸的全透明窗 reparent 并摆到错误原点，
+                            # 绘制/命中/跟随全部错位（见 platform_linux 模块
+                            # 文档与 tests/test_platform_linux_overlay_bypass.py）。
+                            | _x11_bypass_wm_flag()
                             | _mac_no_window_shadow_flag())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)

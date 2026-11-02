@@ -104,6 +104,19 @@ exec --no-startup-id picom
 ```
 > 验证：`pgrep -a picom`。透明异常（黑洞/残影）第一反应就是查 picom。
 
+> ⚠️ **picom 全局 blur 反噬整屏（2026-11-02 已实测踩坑）**：若 picom.conf 里开了
+> `blur-background = true`（常为 rofi 毛玻璃而设），它作用于**所有半透明窗**——桌宠的
+> overlay 恰恰是一张铺满整屏的全透明窗（实测 4480×1600，`_NET_WM_WINDOW_TYPE_UTILITY`，
+> WM_CLASS 第二段 `class_g = 'dsh-pet-standalone'`，代码里 `app.setApplicationName(APP_DIR_NAME)`
+> 保证了这个类名），于是整个桌面被糊一层磨砂。修复：保留全局 blur，精准排除桌宠窗：
+> ```ini
+> blur-background-exclude = [
+>   "class_g = 'dsh-pet-standalone'",
+> ];
+> ```
+> 验证方法：同一区域截屏比 Laplacian 方差（换配置前后 379 → 2100+，边缘能量差 5 倍+，
+> 见 §4 速查表）；rofi 等其他半透明窗毛玻璃行为不变。
+
 ### 2.4 系统托盘：trayer（i3 没有托盘，否则只剩恢复窗）
 
 `app.py` / `overlay_shell.py` 用 `QSystemTrayIcon`。检测到无托盘时走 `_ensure_recovery_entry()`，弹一个「桌宠恢复」窗（功能可用，但没有正常托盘菜单/气泡入口）。要恢复正常托盘体验，给 i3 配一个托盘宿主：
@@ -205,11 +218,22 @@ exec --no-startup-id picom
 exec --no-startup-id trayer --edge top --align right --widthtype request \
   --expand true --height 22 --transparent true --alpha 255 \
   --tint 0x333333 --SetDockType true --SetPartialStrut true
-
-# 让桌宠的 overlay 窗不被 i3 平铺（WM_CLASS 用 xprop 实测后填，见 §5）
-for_window [instance="pet"] floating enable
-for_window [class="pet"] floating enable
 ```
+
+> **桌宠窗不需要任何 `for_window` 规则（2026-11-02 起）**：X11 上 overlay 单合成窗
+> 已带 `Qt.BypassWindowManagerHint`（override-redirect，`pet/platform_linux.py::
+> _x11_bypass_wm_flag`），i3 物理上无法接管/移动它。旧版本文建议的
+> `for_window [class="pet"] floating enable` 是无效规则（真实 WM_CLASS 是
+> `dsh-pet-standalone`，且浮动也救不了坐标错位，见 §4）。
+> 历史背景：i3 接管 overlay 会把它 reparent 进 i3-frame 并摆到错误原点
+>（实测 4480×1600 的窗被放到 `+1280,-266`），而 Qt 收到的 ConfigureNotify 是
+> 父相对坐标，从此绘制/命中/气泡跟随全部错位——表现为「鼠标点不中宠物、
+> 扩展屏位置错乱」。mutter（GNOME）认 Qt 的 `_KDE_NET_WM_WINDOW_TYPE_OVERRIDE`
+> 提示不接管该窗，所以同代码在 Ubuntu 24 GNOME 上正常。
+> 已知取舍：override-redirect 不受 WM 层序管理，X11 上 `on_top=False`（置底）
+> 不再能把桌宠压到普通应用之下。气泡等小窗仍由 i3 管理（实测 i3 会尊重其
+> 客户端请求位置，不偏移）。验证：`xwininfo -root -tree` 里 overlay 窗应是
+> **root 直属子窗**（不在任何 `i3-frame` 容器里）且绝对坐标 = 虚拟桌面原点。
 
 ---
 
@@ -220,13 +244,14 @@ for_window [class="pet"] floating enable
 | 启动即崩，`Could not load the Qt platform plugin "xcb"` | 缺 Qt 的 X11 系统库 | `ldd .../plugins/platforms/libqxcb.so \| grep "not found"` | 装 §2.2 的 apt 包 |
 | 启动即崩，`DISPLAY` 相关 / 无窗口 | 没有 X 会话 | `echo $DISPLAY`；`xrandr` | 登录进 i3，或 `Xvfb :1 ...; export DISPLAY=:1` |
 | 桌宠窗背景全黑 / 不透明 / 拖影 | i3 无合成器 | `pgrep -a picom` | 装并自启 `picom`（§2.3） |
+| 启动桌宠后**整个屏幕蒙一层模糊/磨砂**（项目代码内无任何 blur 实现，是 picom 全局 `blur-background` 命中桌宠的全屏透明 overlay 窗） | picom blur 反噬 | `kill $(pgrep picom)` 看模糊是否立刻消失；`xprop -id <桌宠窗>` 看 WM_CLASS/窗类型（桌宠窗不在 `_NET_CLIENT_LIST` 时用 `xwininfo -root -tree` 找全屏那张） | picom.conf 加 `blur-background-exclude = [ "class_g = 'dsh-pet-standalone'" ];`（§2.3 警示块） |
 | 没有托盘图标，只弹出「桌宠恢复」窗 | i3 无系统托盘 | `which trayer`；app 日志有 `isSystemTrayAvailable` 相关 | 装并自启 `trayer`（§2.4） |
 | 托盘/通知/气泡失灵，或启动异常 | 缺 DBus session bus | `echo $DBUS_SESSION_BUS_ADDRESS` 为空 | `exec dbus-run-session -- i3`（§2.5） |
 | 中文气泡/聊天显示成方块 | 缺 noto-cjk | `fc-list \| grep -i noto-cjk` | `apt install fonts-noto-cjk`（§2.7） |
 | `pip install` 报 `CERTIFICATE_VERIFY_FAILED` | SSL CA 路径坏（本机特有） | 看 `ssl.get_default_verify_paths()` | `export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`（§1.1） |
 | `start` 立即回 `已在运行` 但看不到窗 | 旧实例残留 / pid 文件陈旧 | `./petctl.sh status`；`ps -eo pid=,args=\| grep '\.venv/bin/python -m pet'` | `./petctl.sh stop` 清掉；仍残留则杀掉对应 pid 再启动 |
 | 双击拖动不动 / 移动被忽略 | 误跑在原生 Wayland | `echo $WAYLAND_DISPLAY` | `export QT_QPA_PLATFORM=xcb`（app 也会自动设） |
-| 窗被 i3 平铺占半屏 | i3 默认平铺 overlay 窗 | `xprop \| grep WM_CLASS` 找类名 | 加 §3 的 `for_window ... floating enable` |
+| **鼠标点不中宠物 / 扩展屏后位置错乱**（旧代码 + i3；现行代码已内置修复，出现即检查代码回退） | i3 接管 overlay 窗 reparent 到错误原点，Qt 几何与真实全局坐标错位（§3 说明） | `xwininfo -root -tree`：overlay 窗若在 `i3-frame` 容器里、绝对坐标 ≠ 虚拟桌面原点即命中 | 升级到含 `BypassWindowManagerHint` 的版本（`pet/platform_linux.py`）；临时救场 `i3-msg '[class="^dsh-pet-standalone$"] floating enable, border none, move absolute position 0 0'` |
 | 在线功能（聊天/天气/歌词）失败 | 无外网 / 代理 | `curl -sS -o /dev/null -w "%{http_code}\n" https://pypi.org` | 设 `HTTPS_PROXY` 或直连 |
 
 ---
@@ -253,8 +278,9 @@ pgrep -a picom ; which trayer && pgrep -a trayer ; pgrep -a fcitx5
 tail -n 50 .run/pet.log
 tail -n 50 ~/.config/dsh-pet-standalone/pet-*.log
 
-# 找桌宠窗的 WM_CLASS（用于 i3 浮动规则）
+# 找桌宠窗的 WM_CLASS / 父子关系（排障用；现行代码下 overlay 应为 root 直属，见 §3）
 xprop | grep -E "WM_CLASS|WM_NAME"
+xwininfo -root -tree | grep -B1 dsh-pet-standalone
 
 # 找本机残留的 pet 进程
 ps -eo pid=,args= | grep '\.venv/bin/python -m pet' | grep -v grep

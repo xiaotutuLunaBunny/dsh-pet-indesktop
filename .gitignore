@@ -7,6 +7,9 @@ __pycache__/
 # 运行时产物
 tmp_appdata/
 tests/_tmp_*/
+# 本地开发环境（petctl.sh 用 pyenv 建的 .venv）与启停脚本的 pid/日志目录
+.venv/
+.run/
 
 # 素材：只提交 assets/characters（角色动画），其他 assets 内容不入库
 assets/*

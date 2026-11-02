@@ -24,6 +24,16 @@ if [[ -z "$SYSTEM_INPUT_CONTEXT_HEADER" ]]; then
     exit 1
 fi
 
+# 配置阶段必须用发行版的 Qt6 开发包：下面的链接替换只认 `/usr/lib/.../libQt6*.so*`。
+# 手工安装的 Qt（`CMAKE_PREFIX_PATH` / `Qt6_DIR` 指向另一棵树，例如 ~/env/qt6/6.8.3）会让
+# find_package(Qt6) 选中另一套私有头，编出来的插件与 PySide6 运行库的 ABI 关系就不再
+# 由本脚本保证（本机 2026-11-02 实测：插件的 DT_NEEDED 落在 6.8.3 上，链接没被改写）。
+SYSTEM_QT6_CMAKE="$(find /usr/lib/*/cmake/Qt6 /usr/lib/cmake/Qt6 /usr/lib64/cmake/Qt6 -maxdepth 0 -type d -print -quit 2>/dev/null || true)"
+if [[ -z "$SYSTEM_QT6_CMAKE" ]]; then
+    echo "找不到发行版的 Qt6 CMake 包（qt6-base-dev）；无法构建 PySide6 Fcitx 插件。" >&2
+    exit 1
+fi
+
 # 从实际 PySide6 运行库读取 Qt 精确版本，插件的私有 QPA 头文件必须与它一一对应。
 PYSIDE_QT_VERSION="$($PYTHON_BIN -c 'from PySide6.QtCore import qVersion; print(qVersion())')"
 PYSIDE_QT_LIB="$($PYTHON_BIN -c 'from pathlib import Path; import PySide6; print(Path(PySide6.__file__).resolve().parent / "Qt" / "lib")')"
@@ -55,6 +65,7 @@ cmake -S "$FCITX_SOURCE" -B "$BUILD_DIR" \
     -DENABLE_QT5=OFF \
     -DENABLE_QT6=ON \
     -DENABLE_QT6_WAYLAND_WORKAROUND=OFF \
+    -DCMAKE_PREFIX_PATH="$SYSTEM_QT6_CMAKE" \
     "-DCMAKE_CXX_FLAGS=-I$WORK_DIR/header-overlay"
 
 # CMake 用系统 Qt6 头文件完成目标配置；先编译对象，最终链接改为 PySide6 自带 Qt 运行库。
@@ -73,9 +84,19 @@ perl -pi -e "s#/usr/lib/[^ ]*/libQt6Widgets\\.so[^ ]*#$PYSIDE_QT_LIB/libQt6Widge
 )
 
 # 构建产物必须存在且引用 PySide6 Qt 版本的扩展按键接口，避免回退到系统 Qt 6.4 ABI。
+# 判定不吃管道：`nm | grep -q` 在 `set -o pipefail` 下是**假阴性陷阱**——grep -q 命中即
+# 退，nm 收到 SIGPIPE，管道整体返回 141（本机 2026-11-02 实测：插件已正确构建，
+# 门仍报“构建不完整”）。先把符号表读进变量再做子串判定，结果与符号位置无关。
 BUILT_PLUGIN="$BUILD_DIR/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so"
-if [[ ! -f "$BUILT_PLUGIN" ]] || ! nm -D --demangle "$BUILT_PLUGIN" | grep -q 'handleExtendedKeyEvent'; then
+BUILT_PLUGIN_SYMBOLS=""
+if [[ -f "$BUILT_PLUGIN" ]]; then
+    BUILT_PLUGIN_SYMBOLS="$(nm -D --demangle "$BUILT_PLUGIN" 2>/dev/null || true)"
+fi
+if [[ ! -f "$BUILT_PLUGIN" ]] || [[ "$BUILT_PLUGIN_SYMBOLS" != *handleExtendedKeyEvent* ]]; then
     echo "Fcitx5 Qt6 插件构建不完整。" >&2
+    # 编译阶段是 `set +e` + 日志重定向：不把 compile.log 带出来，失败就只剩
+    # 一句“构建不完整”，本地排障无从下手（临时目录在 trap 里会被删）。
+    [[ -f "$WORK_DIR/compile.log" ]] && tail -n 60 "$WORK_DIR/compile.log" >&2
     exit 1
 fi
 mkdir -p "$(dirname "$OUTPUT_PLUGIN")"

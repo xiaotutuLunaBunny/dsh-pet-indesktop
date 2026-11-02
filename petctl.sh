@@ -8,6 +8,8 @@
 #    ./petctl.sh restart        重启
 #    ./petctl.sh status         查看运行状态
 #    ./petctl.sh log [-f]       查看启动日志（-f 跟随）
+#    ./petctl.sh setup-im       为开发态 venv 构建 ABI 匹配的 Fcitx5 输入法插件
+#                               （修复“输入框打不进中文”，见 docs/UBUNTU-I3 手册 §2.6）
 #
 #  可用环境变量覆盖默认值：
 #    PET_PY_VERSION   pyenv 里的版本号（默认 3.12.12，需已 pyenv install）
@@ -221,8 +223,75 @@ cmd_log() {
     fi
 }
 
+# ---------- 输入法插件（开发态） ----------
+
+# 用项目自己的探测函数（与桌宠启动诊断同一判据：QLibrary 实测加载）报告现状，
+# 输出「状态<TAB>详情」：ok / missing（一个候选都没有）/ broken（全都 dlopen 失败）。
+im_status() {
+    ( cd "$ROOT" && "$PY" - "${1:-fcitx}" <<'PY'
+import sys
+
+from pet import platform_linux as pl
+
+r = pl.probe_input_method_plugin(sys.argv[1])
+if r["loadable"]:
+    print("ok", r["loadable"], sep="\t")
+elif not r["candidates"]:
+    print("missing", "已搜索: " + ", ".join(str(d) for d in pl.input_method_plugin_search_dirs()), sep="\t")
+else:
+    print("broken", "; ".join(f"{p} -> {e}" for p, e in r["errors"].items()), sep="\t")
+PY
+    )
+}
+
+cmd_setup_im() {
+    local module="${1:-fcitx}" plugin_dir target verdict status detail
+    # 依赖清单与成品构建同口径（.github/workflows/build-linux.yml 的 apt 行）：
+    # fcitx5-qt 的 CMake 要 ECM + Qt6 私有 QPA 头 + xcb/xkb 开发头。
+    local apt_hint="sudo apt install -y cmake extra-cmake-modules qt6-base-private-dev libxkbcommon-dev libxcb1-dev libx11-dev git perl"
+    deps_ready || die "依赖未安装，先执行：./petctl.sh install"
+
+    plugin_dir="$("$PY" -c 'import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve().parent / "Qt" / "plugins" / "platforminputcontexts")')" \
+        || die "无法定位 venv 内的 PySide6 插件目录"
+    target="$plugin_dir/libfcitx5platforminputcontextplugin.so"
+
+    verdict="$(im_status "$module")" || die "输入法探测失败（venv 里的 pet 包或 PySide6 不可用？）"
+    status="${verdict%%$'\t'*}"; detail="${verdict#*$'\t'}"
+    printf '现状（模块键 %s）：%s\n' "$module" "$status"
+    [ -n "$detail" ] && printf '  %s\n' "$detail"
+    if [ "$status" = "ok" ]; then
+        printf '已存在可加载的插件，无需构建。\n'
+        return 0
+    fi
+    if [ "${XMODIFIERS:-}" != "@im=fcitx" ]; then
+        printf '提示：当前会话 XMODIFIERS=%s 未声明 fcitx，桌宠不会选择 fcitx 输入法前端。\n' "${XMODIFIERS:-（未设置）}"
+        printf '      请先启动 fcitx5 并在桌面环境里把输入法切到 fcitx，再执行本命令。\n'
+    fi
+
+    for tool in cmake git perl; do
+        command -v "$tool" >/dev/null 2>&1 || die "缺少构建工具 $tool：$apt_hint"
+    done
+    if [ -z "$(find /usr/include -type f -path '*/QtGui/*/QtGui/qpa/qplatforminputcontext.h' -print -quit 2>/dev/null)" ]; then
+        die "缺少 Qt6 私有开发头文件：$apt_hint"
+    fi
+    if [ -z "$(find /usr/share/ECM /usr/lib -maxdepth 6 -name 'ECMConfig.cmake' -print -quit 2>/dev/null)" ]; then
+        die "缺少 Extra-CMake-Modules（fcitx5-qt 的 CMake 配置需要）：$apt_hint"
+    fi
+
+    printf '构建中（首次会 clone qtbase + fcitx5-qt，需要外网，约数分钟）…\n'
+    "$ROOT/scripts/build_pyside6_fcitx_plugin.sh" "$PY" "$target" || die "插件构建失败（见上方输出）"
+
+    verdict="$(im_status "$module")" || die "构建后探测失败"
+    status="${verdict%%$'\t'*}"; detail="${verdict#*$'\t'}"
+    if [ "$status" != "ok" ]; then
+        printf '插件已生成但 Qt 仍无法加载（%s）：%s\n' "$target" "$detail" >&2
+        return 1
+    fi
+    printf '已就绪：%s\n重启桌宠生效：./petctl.sh restart\n' "$detail"
+}
+
 usage() {
-    sed -n '5,18p' "$0" | sed 's/^#  \{0,1\}//' | grep -v '^#$'
+    sed -n '5,20p' "$0" | sed 's/^#  \{0,1\}//' | grep -v '^#$'
 }
 
 action="${1:-}"
@@ -234,6 +303,7 @@ case "$action" in
     restart) cmd_stop && cmd_start "$@" ;;
     status) cmd_status ;;
     log) cmd_log "${1:-}" ;;
+    setup-im) cmd_setup_im "${1:-}" ;;
     ""|-h|--help|help) usage ;;
     *) usage; exit 2 ;;
 esac

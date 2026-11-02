@@ -6,7 +6,7 @@
 
 ---
 
-## 0. 一句话结论（i3 三大坑）
+## 0. 一句话结论（i3 三大坑 + 一个中文输入坑）
 
 i3 默认 **没有合成器**（透明窗会发黑/不透明）和 **没有系统托盘**（托盘图标消失，只剩「桌宠恢复」窗）。
 因此迁移到 i3 **必须**额外装两类东西：
@@ -15,6 +15,11 @@ i3 默认 **没有合成器**（透明窗会发黑/不透明）和 **没有系�
 2. **托盘宿主**：`trayer` / `stalonetray` / `polybar`（否则 `QSystemTrayIcon.isSystemTrayAvailable()` 为 false，app 走恢复窗分支）。
 
 再加一组 **Qt6 的 X11 系统库**（PySide6 wheel 不带这些），缺了会直接 `Could not load the Qt platform plugin "xcb"` 崩在启动最前面。
+
+> **第四个坑（中文输入，2026-11-02 实测）**：fcitx5 在跑、三个 IM 环境变量全对，仍然可能**所有
+> 输入框打不进中文**——系统 apt 的 Qt6 fcitx5 插件是按系统 Qt（本机 6.10.2）的私有 ABI 编译的，
+> 而进程里跑的是 venv PySide6 自带的 Qt 6.11.3，dlopen 失败后 Qt **静默回退 compose**。用
+> `./petctl.sh setup-im` 探测并现场构建匹配插件，见 §2.6.1。
 
 ---
 
@@ -158,6 +163,61 @@ export XMODIFIERS=@im=fcitx
 ```
 > 不用中文输入：完全可以不装 fcitx，app 那段逻辑自动 no-op，不影响启动。
 
+#### 2.6.1 环境变量都对、fcitx5 在跑，但就是打不进中文：插件 ABI 不匹配（2026-11-02 本机实测）
+
+`QT_IM_MODULE=fcitx` 只决定“用哪个前端”，真正干活的是 Qt 的
+`platforminputcontexts/libfcitx5platforminputcontextplugin.so`。Qt 对该目录下的插件
+**dlopen 失败时只往 stderr 吐一行就静默回退 compose 上下文**（compose 只支持
+死键组合，不支持中文），于是表现为“候选词根本不出现、聊天/设置/快速聊天
+所有输入框都打不进中文”，界面侧零提示——这就是本机踩到的现象。
+
+失败形态：**开发态 venv 与系统 apt 插件的 Qt 私有 ABI 不是同一个版本**。
+
+| 侧 | Qt 版本 | 来源 |
+|---|---|---|
+| 进程里实际生效的 libQt6Core/Gui | 6.11.3 | venv 里的 PySide6 wheel（`requirements.txt` 为 Linux 钉了 `<6.12`） |
+| apt 的 fcitx5 Qt6 插件 | 6.10.2 | `/usr/lib/x86_64-linux-gnu/qt6/plugins/platforminputcontexts/`，链接 `Qt_6_PRIVATE_API` 版本符号 |
+
+插件引用 `QtPrivate_6_10_2` 的私有符号，进程里的 Qt 是 6.11.3 → dlopen 直接失败
+（`QT_DEBUG_PLUGINS=1` 可见，随后就是 `libcomposeplatforminputcontextplugin.so loaded library`）：
+
+```
+Cannot load library .../libfcitx5platforminputcontextplugin.so:
+/usr/lib/x86_64-linux-gnu/libQt6DBus.so.6: undefined symbol:
+_ZN14QObjectPrivateC2E16QtPrivate_6_10_2, version Qt_6_PRIVATE_API
+```
+
+成品不受影响：`scripts/build_linux.sh` 会调 `scripts/build_pyside6_fcitx_plugin.sh`，
+按 **PySide6 自己的运行库** 编译插件并 `--add-binary` 打进包；缺的只是开发态 venv。
+
+**诊断**（与桌宠启动用同一判据：`QLibrary` 实测加载，不比对版本声明）：
+
+```sh
+./petctl.sh setup-im      # 先报现状：ok / broken（带 Qt 原始错误）/ missing（一个候选都没有）
+tail -n 50 .run/pet.log    # 桌宠启动时也会把同一结论写成 WARNING（含候选路径 + 错误 + 修复入口）
+```
+
+**修复**（开发态；产物直接放进 venv 的 PySide6 插件目录，Qt 会自己扫到）：
+
+```sh
+sudo apt install -y qt6-base-private-dev cmake git perl   # 私有 QPA 头 + 构建工具
+./petctl.sh setup-im                                     # 需外网 clone qtbase + fcitx5-qt，约数分钟
+./petctl.sh restart
+```
+
+验证（比日志更硬的证据：看进程真的映射了哪个插件）：
+
+```sh
+grep -o 'platforminputcontexts/[^ ]*' /proc/$(pgrep -f '\.venv/bin/python -m pet' | head -1)/maps | sort -u
+# 期望 libfcitx5platforminputcontextplugin.so；只剩 libcompose… 就是还没修好
+```
+
+> 为什么不拿“插件自带的版本声明”做判据：随包插件是“按系统 Qt 头编译、只链接
+> PySide6 运行库”，其声明天然不等于运行时版本，按声明比对会把正常工作的成品
+> 判成坏的。实测加载没有这个失真。详见 `pet/platform_linux.py` 模块文档与
+> `tests/test_linux_input_method.py`。重装 venv（`./petctl.sh install` 重建）后需重跑
+> `setup-im`：插件装在 site-packages 里，随目录一起没。
+
 ### 2.7 中文字体（缺则气泡/聊天中文变方块）
 
 README 已要求：`fonts-noto-cjk`（缺时中文显示为方块）。建议一并装 `fonts-noto-core`。
@@ -252,6 +312,7 @@ exec --no-startup-id trayer --edge top --align right --widthtype request \
 | `start` 立即回 `已在运行` 但看不到窗 | 旧实例残留 / pid 文件陈旧 | `./petctl.sh status`；`ps -eo pid=,args=\| grep '\.venv/bin/python -m pet'` | `./petctl.sh stop` 清掉；仍残留则杀掉对应 pid 再启动 |
 | 双击拖动不动 / 移动被忽略 | 误跑在原生 Wayland | `echo $WAYLAND_DISPLAY` | `export QT_QPA_PLATFORM=xcb`（app 也会自动设） |
 | **鼠标点不中宠物 / 扩展屏后位置错乱**（旧代码 + i3；现行代码已内置修复，出现即检查代码回退） | i3 接管 overlay 窗 reparent 到错误原点，Qt 几何与真实全局坐标错位（§3 说明） | `xwininfo -root -tree`：overlay 窗若在 `i3-frame` 容器里、绝对坐标 ≠ 虚拟桌面原点即命中 | 升级到含 `BypassWindowManagerHint` 的版本（`pet/platform_linux.py`）；临时救场 `i3-msg '[class="^dsh-pet-standalone$"] floating enable, border none, move absolute position 0 0'` |
+| 中文打不进去（候选窗不出现），但 fcitx5 在跑、三个 IM 环境变量都对 | Qt 的 fcitx5 插件 dlopen 失败（插件与进程内 Qt 的私有 ABI 版本不同），Qt 静默回退 compose 上下文 | `./petctl.sh setup-im` 报 broken 并打印 `undefined symbol: …QtPrivate_6_10_2`；`grep platforminputcontexts /proc/<pid>/maps` 只有 compose | 开发态：`sudo apt install qt6-base-private-dev && ./petctl.sh setup-im` 后 `./petctl.sh restart`（§2.6.1）；成品侧检查随包 `platforminputcontexts` 目录是否齐 |
 | 在线功能（聊天/天气/歌词）失败 | 无外网 / 代理 | `curl -sS -o /dev/null -w "%{http_code}\n" https://pypi.org` | 设 `HTTPS_PROXY` 或直连 |
 
 ---
@@ -272,6 +333,12 @@ QT_DEBUG_PLUGINS=1 QT_QPA_PLATFORM=xcb ./petctl.sh start
 
 # 配套进程
 pgrep -a picom ; which trayer && pgrep -a trayer ; pgrep -a fcitx5
+
+# 输入法插件能不能加载（判据 = Qt 实测 dlopen，与启动诊断同源）
+./petctl.sh setup-im
+
+# 桌宠进程实际映射了哪个输入法插件（只剩 compose = fcitx 插件没加载上，中文必挂）
+grep -o 'platforminputcontexts/[^ ]*' /proc/$(pgrep -f '\.venv/bin/python -m pet' | head -1)/maps | sort -u
 
 # 启动状态与日志
 ./petctl.sh status

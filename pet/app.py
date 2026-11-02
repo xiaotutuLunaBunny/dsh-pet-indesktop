@@ -36,6 +36,8 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon,
 
 from .platform_mac import _mac_set_dock_icon_visible
 
+from . import platform_linux
+
 from . import autostart as autostart_mod
 from . import catalog
 from . import click_sound
@@ -5201,7 +5203,18 @@ def _default_xcb_platform_on_wayland() -> None:
 
 
 def _configure_linux_fcitx_input_method() -> None:
-    """为 PySide6 冻结版选择与内置 Qt ABI 兼容的 Fcitx 输入法前端。"""
+    """为 PySide6 冻结版选择与内置 Qt ABI 兼容的 Fcitx 输入法前端。
+
+    本函数只改环境变量，**必须跑在 QApplication 之前**（Qt 在构造时才选型输入法
+    插件）；插件能不能加载的诊断在 `_warn_if_fcitx_plugin_unusable`，那条要在
+    `_setup_logging` 之后跑。拆成两个入口就是因为这两个时机不能倒过来。
+
+    背景（2026-11-02 Ubuntu 26 + i3 开发态实测）：venv PySide6 自带 Qt 6.11.3 与
+    系统 apt 插件（按 Qt 6.10.2 私有 ABI 编译）不兼容，dlopen 报 undefined symbol，
+    Qt 静默回退 compose → **所有输入框打不进中文**。判据见 platform_linux 模块
+    文档（实测加载，不比对版本声明）；修复入口：./petctl.sh setup-im（开发态）
+    与随包插件（成品，scripts/build_pyside6_fcitx_plugin.sh）。
+    """
     # Linux 成品随包携带按 PySide6 Qt ABI 编译的 Fcitx 插件；未指定时默认选中 fcitx 上下文。
     if not sys.platform.startswith("linux"):
         return
@@ -5209,6 +5222,44 @@ def _configure_linux_fcitx_input_method() -> None:
         return
     if not os.environ.get("QT_IM_MODULE", "").strip():
         os.environ["QT_IM_MODULE"] = "fcitx"
+
+
+def _warn_if_fcitx_plugin_unusable(module_key: str) -> None:
+    """fcitx 会话下没有任何输入法插件能加载时告警（纯诊断，绝不影响启动）。
+
+    只在模块键指向 fcitx 系（fcitx / fcitx5）时检查：ibus 等其它前端有自己的
+    插件生态，不适用这条判据。告警里带上候选插件路径与 Qt 原始错误文本（就
+    是那条 undefined symbol），让“中文打不进去”从现象直接看到根因；探测本身
+    任何异常一律吞掉——诊断不许把启动带崩。
+
+    调用时机 = `_setup_logging` 之后：成品从桌面启动时**没有控制台**，stderr 上的
+    一行等于没写，能被用户和支持者看到的只有 `pet-<pid>.log` 滚动文件。
+    """
+    if module_key not in ("fcitx", "fcitx5"):
+        return
+    try:
+        probe = platform_linux.probe_input_method_plugin(module_key)
+        if probe["loadable"] is not None:
+            return
+        if not probe["candidates"]:
+            logging.warning(
+                "fcitx 会话下未找到任何名为 %s 的 Qt 输入法插件（已搜索：%s）："
+                "Qt 将回退 compose 上下文，聊天/设置等所有输入框无法输入中文。"
+                "修复：./petctl.sh setup-im；详见 "
+                "docs/UBUNTU-I3-ENV-SETUP-TROUBLESHOOTING.md §2.6",
+                module_key, ", ".join(str(d) for d in platform_linux.input_method_plugin_search_dirs()) or "(无候选目录)",
+            )
+            return
+        detail = "; ".join(f"{path} -> {err}" for path, err in probe["errors"].items()) or "(无失败原因)"
+        logging.warning(
+            "fcitx 会话下输入法插件均加载失败（模块键 %s，Qt 回退 compose 上下文，"
+            "聊天/设置等所有输入框无法输入中文）：%s——常见原因是插件按另一个 Qt "
+            "版本的私有 ABI 编译（undefined symbol）。修复：./petctl.sh setup-im；"
+            "详见 docs/UBUNTU-I3-ENV-SETUP-TROUBLESHOOTING.md §2.6",
+            module_key, detail,
+        )
+    except Exception:  # noqa: BLE001 - 诊断路径，任何失败只留痕不拦截
+        logging.debug("fcitx 输入法插件可用性探测失败（忽略）", exc_info=True)
 
 
 # Historical public name retained for integrations and older tests.
@@ -5279,6 +5330,10 @@ def main(argv: list[str] | None = None, enable_chat: bool = True) -> int:
         config = Config(instance_id="")
         _mac_set_dock_icon_visible(bool(config.get("show_dock_icon", True)))
         _setup_logging(config)
+        # 输入法插件诊断：必须在 `_setup_logging` 之后（成品的唯一可见通道是
+        # `pet-<pid>.log`），也必须先让 `_configure_linux_fcitx_input_method()` 定下
+        # 模块键——两者都不能提前也不能置后。
+        _warn_if_fcitx_plugin_unusable(os.environ.get("QT_IM_MODULE", "").strip())
         # 功能模块激活：在创建任何可选服务（AppShell 及其服务树）之前完成
         # 一次性迁移判定并冻结本次运行快照；功能页写盘只影响下次启动。
         feature_activation_mod.decide_and_freeze(config)

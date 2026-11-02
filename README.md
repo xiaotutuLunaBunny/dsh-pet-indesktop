@@ -11,7 +11,7 @@
   <img alt="动画素材" src="https://img.shields.io/badge/%E5%8A%A8%E7%94%BB-dynamic%20animations-ff69b4">
 </p>
 
-一个基于 **Python + PySide6** 的独立桌面宠物。项目脱离 DSH 运行时，提供透明无边框、置顶、可拖动、角色切换、动画播放、系统托盘和可选 AI 对话能力。
+小兔子一个基于 **Python + PySide6** 的独立桌面宠物。项目脱离 DSH 运行时，提供透明无边框、置顶、可拖动、角色切换、动画播放、系统托盘和可选 AI 对话能力。
 
 > **发布状态**
 >
